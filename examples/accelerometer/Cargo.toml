@@ -16,6 +16,7 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
+micromath = { version = "2.1.0", features = ["vector"] }
 
 [profile.release]
 debug = 2
