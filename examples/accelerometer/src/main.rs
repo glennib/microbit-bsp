@@ -3,7 +3,11 @@
 
 use defmt::{info, Debug2Format};
 use embassy_executor::Spawner;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
+use embassy_sync::channel::Channel;
 use embassy_time::Duration;
+use microbit_bsp::accelerometer::AccelOutputDataRate;
+use microbit_bsp::lsm303agr::Acceleration;
 use microbit_bsp::{
     accelerometer::Accelerometer,
     display::{Brightness, Frame},
@@ -12,8 +16,10 @@ use microbit_bsp::{
 };
 use {defmt_rtt as _, panic_probe as _};
 
+static CHANNEL: Channel<CriticalSectionRawMutex, Acceleration, 1> = Channel::new();
+
 #[embassy_executor::main]
-async fn main(_s: Spawner) {
+async fn main(spawner: Spawner) {
     let board = Microbit::default();
     defmt::info!("Application started!");
 
@@ -33,10 +39,21 @@ async fn main(_s: Spawner) {
     let status = acc.accel_status().unwrap();
     info!("status: {:?}", Debug2Format(&status));
 
+
+    spawner.spawn(display_task(display, Duration::from_hz(10))).unwrap();
+    acc.run(AccelOutputDataRate::Hz10, CHANNEL.sender().into())
+        .await
+        .unwrap();
+    #[allow(clippy::empty_loop)]
+    loop {}
+}
+
+#[embassy_executor::task]
+async fn display_task(mut display: LedMatrix, length: Duration) {
     loop {
-        let (x, y, z) = acc.accel_data().unwrap().xyz_mg();
+        let (x, y, z) = CHANNEL.receive().await.xyz_mg();
         #[allow(clippy::cast_precision_loss)]
-        display_level(&mut display, Duration::from_millis(100), x as f32, y as f32, z as f32).await;
+        display_level(&mut display, length, x as f32, y as f32, z as f32).await;
     }
 }
 
