@@ -6,14 +6,9 @@ use embassy_executor::Spawner;
 use embassy_time::Duration;
 use microbit_bsp::{
     accelerometer::Accelerometer,
-    display::{fonts::CROSS_MARK, Brightness},
+    display::{Brightness, Frame},
     embassy_nrf::{bind_interrupts, peripherals::TWISPI0, twim::InterruptHandler},
-    lsm303agr::Acceleration,
-    Microbit,
-};
-use micromath::{
-    vector::{Vector, Vector3d},
-    F32Ext,
+    LedMatrix, Microbit,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -35,89 +30,65 @@ async fn main(_s: Spawner) {
     let irqs = InterruptRequests {};
     let mut acc = Accelerometer::new(board.twispi0, irqs, board.p23, board.p22).unwrap();
 
+    let status = acc.accel_status().unwrap();
+    info!("status: {:?}", Debug2Format(&status));
+
     loop {
-        // let status = acc.accel_status().unwrap();
-        // info!("status: {:?}", Debug2Format(&status));
-
-        let (x, y) = sines_from_acceleration(acc.accel_data().unwrap());
-
-        let x = sin_to_level(x);
-        let y = sin_to_level(y);
-
-        // info!("{}, {}", x, y);
-
-        if x.abs() == 3 || y.abs() == 3 {
-            display.apply(CROSS_MARK);
-        } else {
-            display.on(usize::try_from(2_i8 - x).unwrap(), usize::try_from(2_i8 - y).unwrap());
-        };
-        display.display_current(Duration::from_millis(100)).await;
-    }
-}
-
-fn sin_to_level(a: f32) -> i8 {
-    const WORST: f32 = 0.12247903839280565;
-    const OK: f32 = 0.06987000497506388;
-    const GOOD: f32 = 0.034913677698806274;
-    const L_WORST: i8 = L_OK;
-    const L_OK: i8 = 2;
-    const L_GOOD: i8 = 1;
-    const L_GREAT: i8 = 0;
-    if a <= -WORST {
-        return -L_WORST;
-    }
-    if a <= -OK {
-        return -L_OK;
-    }
-    if a <= -GOOD {
-        return -L_GOOD;
-    }
-    if a <= GOOD {
-        return L_GREAT;
-    }
-    if a <= OK {
-        return L_GOOD;
-    }
-    if a <= WORST {
-        return L_OK;
-    }
-    L_WORST
-}
-
-type V = Vector3d<f32>;
-
-fn sines_from_acceleration(acceleration: Acceleration) -> (f32, f32) {
-    let reference = V::from((0., 0., -1000.));
-    let measured = V::from({
-        let (x, y, z) = acceleration.xyz_mg();
+        let (x, y, z) = acc.accel_data().unwrap().xyz_mg();
         #[allow(clippy::cast_precision_loss)]
-        (x as f32, y as f32, z as f32)
-    });
-    let measured_xz = V {
-        x: measured.x,
-        y: 0.,
-        z: measured.z,
-    };
-    let measured_yz = V {
-        x: 0.,
-        y: measured.y,
-        z: measured.z,
-    };
-
-
-
-    let (x, y) = (sin_between(measured_xz, reference), -sin_between(reference, measured_yz));
-    (x, y)
+        display_level(&mut display, Duration::from_millis(100), x as f32, y as f32, z as f32).await;
+    }
 }
 
-// fn cos_between(a: V, b: V) -> f32 {
-//     (a.dot(b) / (a.magnitude() * b.magnitude())).acos()
-// }
+async fn display_level(display: &mut LedMatrix, length: Duration, acc_x: f32, acc_y: f32, acc_z: f32) {
+    let z = {
+        // To avoid division by 0
+        const LIMIT: f32 = 100.;
+        if acc_z <= -LIMIT || acc_z >= LIMIT {
+            acc_z
+        } else if acc_z > 0. {
+            LIMIT
+        } else {
+            -LIMIT
+        }
+    };
+    let sin_x = acc_x / z;
+    let sin_y = -acc_y / z;
 
-// sin θ = |a × b| / (|a| |b|)
-fn sin_between(a: V, b: V) -> f32 {
-    let axb = a * b;
-    let den = a.magnitude() * b.magnitude();
-    let signless = axb.magnitude() / den;
-    signless.copysign(axb.z)
+    let offset_x = sin_to_offset(sin_x);
+    let offset_y = sin_to_offset(sin_y);
+
+    let frame = create_frame(offset_x, offset_y);
+
+    display.display(frame, length).await;
+}
+
+fn create_frame(offset_x: i8, offset_y: i8) -> Frame<5, 5> {
+    let mut frame = Frame::empty();
+    frame.set(
+        usize::try_from(2 + offset_x).unwrap(),
+        usize::try_from(2 + offset_y).unwrap(),
+    );
+    frame
+}
+
+fn sin_to_offset(a: f32) -> i8 {
+    const SIN_BAD: f32 = 0.175;
+    const SIN_OK: f32 = 0.0874;
+    const OFFSET_BAD: i8 = 2;
+    const OFFSET_GOOD: i8 = 1;
+    const OFFSET_PERFECT: i8 = 0;
+    if a <= -SIN_BAD {
+        return -OFFSET_BAD;
+    }
+    if a <= -SIN_OK {
+        return -OFFSET_GOOD;
+    }
+    if a <= SIN_OK {
+        return OFFSET_PERFECT;
+    }
+    if a <= SIN_BAD {
+        return OFFSET_GOOD;
+    }
+    OFFSET_BAD
 }
